@@ -1,31 +1,53 @@
 import java.awt.*;
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.util.PriorityQueue;
+import java.util.*;
 import javax.swing.*;
 
-/**
- * Huffman File Compressor with a Swing GUI.
- * Works on any file (text or binary) because it compresses raw bytes.
- *
- * Compile: javac HuffmanCompressor.java
- * Run:     java HuffmanCompressor
- */
-public class huffman extends JFrame {
+// Simple Huffman compressor for text files, with a small Swing window.
+// Compile: javac HuffmanCompressor.java
+// Run:     java HuffmanCompressor
 
-    // ---------------------------------------------------------------
-    //  Huffman core
-    // ---------------------------------------------------------------
-    static class Node implements Comparable<Node> {
-        final int symbol;      // 0-255 for leaves, -1 for internal nodes
-        final long freq;
-        final int order;       // tie-breaker so the tree is identical every time
+public class huffman extends JFrame {
+private File askWhereToSave(String suggestedName) {
+    JFileChooser chooser = new JFileChooser();
+    if (chosenFile != null) {
+        chooser.setCurrentDirectory(chosenFile.getParentFile());
+    }
+    chooser.setSelectedFile(new File(suggestedName));
+    chooser.setDialogTitle("Save file as");
+
+    if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
+        return null;
+    }
+
+    File file = chooser.getSelectedFile();
+
+    if (file.exists()) {
+        int answer = JOptionPane.showConfirmDialog(this,
+                file.getName() + " already exists. Replace it?",
+                "Confirm", JOptionPane.YES_NO_OPTION);
+        if (answer != JOptionPane.YES_OPTION) {
+            return null;
+        }
+    }
+    return file;
+}
+
+    // ---------- Huffman tree node ----------
+    static class Node {
+        char ch;
+        int freq;
         Node left, right;
 
-        Node(int symbol, long freq, int order, Node left, Node right) {
-            this.symbol = symbol;
+        Node(char ch, int freq) {
+            this.ch = ch;
             this.freq = freq;
-            this.order = order;
+        }
+
+        Node(int freq, Node left, Node right) {
+            this.freq = freq;
             this.left = left;
             this.right = right;
         }
@@ -33,255 +55,263 @@ public class huffman extends JFrame {
         boolean isLeaf() {
             return left == null && right == null;
         }
-
-        @Override
-        public int compareTo(Node o) {
-            if (freq != o.freq) return Long.compare(freq, o.freq);
-            return Integer.compare(order, o.order);
-        }
     }
 
-    static Node buildTree(long[] freq) {
-        PriorityQueue<Node> pq = new PriorityQueue<>();
-        int order = 0;
-        for (int i = 0; i < 256; i++) {
-            if (freq[i] > 0) pq.add(new Node(i, freq[i], order++, null, null));
+    // ---------- Huffman logic ----------
+
+    // count how many times each character appears
+    // (TreeMap keeps the characters sorted, so compress and decompress build the same tree)
+    static TreeMap<Character, Integer> countChars(String text) {
+        TreeMap<Character, Integer> freq = new TreeMap<>();
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (freq.containsKey(c)) {
+                freq.put(c, freq.get(c) + 1);
+            } else {
+                freq.put(c, 1);
+            }
         }
-        if (pq.isEmpty()) return null;
-        if (pq.size() == 1) {                       // file has only one distinct byte
-            Node only = pq.poll();
-            return new Node(-1, only.freq, order++, only, null);
-        }
-        while (pq.size() > 1) {
-            Node a = pq.poll();
-            Node b = pq.poll();
-            pq.add(new Node(-1, a.freq + b.freq, order++, a, b));
-        }
-        return pq.poll();
+        return freq;
     }
 
-    static void buildCodes(Node node, String prefix, String[] codes) {
-        if (node == null) return;
-        if (node.isLeaf()) {
-            codes[node.symbol] = prefix.isEmpty() ? "0" : prefix;
+    // build the tree: keep joining the two smallest nodes
+    static Node buildTree(TreeMap<Character, Integer> freq) {
+        PriorityQueue<Node> queue = new PriorityQueue<>((a, b) -> a.freq - b.freq);
+
+        for (char c : freq.keySet()) {
+            queue.add(new Node(c, freq.get(c)));
+        }
+
+        while (queue.size() > 1) {
+            Node first = queue.poll();
+            Node second = queue.poll();
+            queue.add(new Node(first.freq + second.freq, first, second));
+        }
+        return queue.poll();
+    }
+
+    // walk the tree: going left adds a 0, going right adds a 1
+    static void makeCodes(Node node, String code, HashMap<Character, String> codes) {
+        if (node == null) {
             return;
         }
-        buildCodes(node.left, prefix + "0", codes);
-        buildCodes(node.right, prefix + "1", codes);
+        if (node.isLeaf()) {
+            if (code.equals("")) {
+                code = "0";   // file has only one kind of character
+            }
+            codes.put(node.ch, code);
+            return;
+        }
+        makeCodes(node.left, code + "0", codes);
+        makeCodes(node.right, code + "1", codes);
     }
 
-    /** Compresses 'in' into 'out'. Returns a text report. */
-    static String compress(File in, File out) throws IOException {
-        byte[] data = Files.readAllBytes(in.toPath());
+    // ---------- Compress ----------
+    static String compress(File input, File output) throws IOException {
+        String text = new String(Files.readAllBytes(input.toPath()), StandardCharsets.UTF_8);
 
-        long[] freq = new long[256];
-        for (byte b : data) freq[b & 0xFF]++;
-
+        TreeMap<Character, Integer> freq = countChars(text);
         Node root = buildTree(freq);
-        String[] codes = new String[256];
-        buildCodes(root, "", codes);
 
-        int distinct = 0;
-        for (long f : freq) if (f > 0) distinct++;
+        HashMap<Character, String> codes = new HashMap<>();
+        makeCodes(root, "", codes);
 
-        try (DataOutputStream dos = new DataOutputStream(
-                new BufferedOutputStream(new FileOutputStream(out)))) {
-            // Header: original length, number of distinct bytes, then (byte, frequency) pairs
-            dos.writeLong(data.length);
-            dos.writeShort(distinct);
-            for (int i = 0; i < 256; i++) {
-                if (freq[i] > 0) {
-                    dos.writeByte(i);
-                    dos.writeLong(freq[i]);
-                }
-            }
-            // Body: the encoded bits packed into bytes
-            int current = 0, bitCount = 0;
-            for (byte b : data) {
-                String code = codes[b & 0xFF];
-                for (int k = 0; k < code.length(); k++) {
-                    current = (current << 1) | (code.charAt(k) - '0');
-                    bitCount++;
-                    if (bitCount == 8) {
-                        dos.writeByte(current);
-                        current = 0;
-                        bitCount = 0;
-                    }
-                }
-            }
-            if (bitCount > 0) {                      // pad the last byte with zeros
-                dos.writeByte(current << (8 - bitCount));
-            }
+        // turn the whole text into a long string of 0s and 1s
+        StringBuilder bits = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            bits.append(codes.get(text.charAt(i)));
         }
 
-        long newSize = out.length();
-        StringBuilder sb = new StringBuilder();
-        sb.append("=== COMPRESSION DONE ===\n");
-        sb.append("Input file     : ").append(in.getName()).append("\n");
-        sb.append("Output file    : ").append(out.getName()).append("\n");
-        sb.append("Original size  : ").append(data.length).append(" bytes\n");
-        sb.append("Compressed size: ").append(newSize).append(" bytes (includes header)\n");
-        if (data.length > 0) {
-            double saved = 100.0 * (1.0 - (double) newSize / data.length);
-            sb.append(String.format("Space saved    : %.2f%%%n", saved));
+        DataOutputStream out = new DataOutputStream(new FileOutputStream(output));
+
+        // header: how many characters in total, then every character with its count
+        out.writeInt(text.length());
+        out.writeInt(freq.size());
+        for (char c : freq.keySet()) {
+            out.writeChar(c);
+            out.writeInt(freq.get(c));
         }
-        sb.append("\nSymbol   Freq      Code\n");
-        sb.append("---------------------------\n");
-        for (int i = 0; i < 256; i++) {
-            if (freq[i] > 0) {
-                sb.append(String.format("%-8s %-9d %s%n", describe(i), freq[i], codes[i]));
+
+        // body: pack the bits, 8 at a time, into bytes
+        for (int i = 0; i < bits.length(); i += 8) {
+            int end = Math.min(i + 8, bits.length());
+            String chunk = bits.substring(i, end);
+            while (chunk.length() < 8) {
+                chunk = chunk + "0";   // pad the last byte with zeros
             }
+            out.writeByte(Integer.parseInt(chunk, 2));
         }
-        return sb.toString();
+        out.close();
+
+        // report for the text box
+        long originalSize = input.length();
+        long newSize = output.length();
+        String report = "Compressed successfully!\n\n";
+        report += "Original size   : " + originalSize + " bytes\n";
+        report += "Compressed size : " + newSize + " bytes\n";
+        if (originalSize > 0) {
+            double saved = 100.0 - (newSize * 100.0 / originalSize);
+            report += "Space saved     : " + String.format("%.1f", saved) + " %\n";
+        }
+        report += "\nCharacter codes:\n";
+        for (char c : freq.keySet()) {
+            report += show(c) + "  (used " + freq.get(c) + " times)  ->  " + codes.get(c) + "\n";
+        }
+        return report;
     }
 
-    /** Decompresses 'in' into 'out'. Returns a text report. */
-    static String decompress(File in, File out) throws IOException {
-        long originalLength;
-        long[] freq = new long[256];
-        byte[] body;
+    // ---------- Decompress ----------
+    static String decompress(File input, File output) throws IOException {
+        DataInputStream in = new DataInputStream(new FileInputStream(input));
 
-        try (DataInputStream dis = new DataInputStream(
-                new BufferedInputStream(new FileInputStream(in)))) {
-            originalLength = dis.readLong();
-            int distinct = dis.readUnsignedShort();
-            for (int i = 0; i < distinct; i++) {
-                int sym = dis.readUnsignedByte();
-                freq[sym] = dis.readLong();
-            }
-            body = dis.readAllBytes();
+        // read the header
+        int totalChars = in.readInt();
+        int uniqueChars = in.readInt();
+        TreeMap<Character, Integer> freq = new TreeMap<>();
+        for (int i = 0; i < uniqueChars; i++) {
+            char c = in.readChar();
+            int count = in.readInt();
+            freq.put(c, count);
         }
 
+        // rebuild the same tree
         Node root = buildTree(freq);
-        byte[] result = new byte[(int) originalLength];
 
-        if (root != null) {
-            int written = 0;
-            Node node = root;
-            outer:
-            for (byte b : body) {
-                for (int bit = 7; bit >= 0; bit--) {
-                    int v = (b >> bit) & 1;
-                    node = (v == 0) ? node.left : node.right;
-                    if (node.isLeaf()) {
-                        result[written++] = (byte) node.symbol;
-                        node = root;
-                        if (written == originalLength) break outer;
-                    }
+        // read the rest of the file and turn it back into 0s and 1s
+        StringBuilder bits = new StringBuilder();
+        int b;
+        while ((b = in.read()) != -1) {
+            String binary = Integer.toBinaryString(b);
+            while (binary.length() < 8) {
+                binary = "0" + binary;
+            }
+            bits.append(binary);
+        }
+        in.close();
+
+        // follow the bits down the tree to get the characters back
+        StringBuilder text = new StringBuilder();
+        if (root != null && root.isLeaf()) {
+            // only one kind of character in the file
+            for (int i = 0; i < totalChars; i++) {
+                text.append(root.ch);
+            }
+        } else if (root != null) {
+            Node current = root;
+            for (int i = 0; i < bits.length() && text.length() < totalChars; i++) {
+                if (bits.charAt(i) == '0') {
+                    current = current.left;
+                } else {
+                    current = current.right;
+                }
+                if (current.isLeaf()) {
+                    text.append(current.ch);
+                    current = root;
                 }
             }
         }
-        Files.write(out.toPath(), result);
 
-        return "=== DECOMPRESSION DONE ===\n"
-                + "Input file   : " + in.getName() + "\n"
-                + "Output file  : " + out.getName() + "\n"
-                + "Restored size: " + result.length + " bytes\n";
+        Files.write(output.toPath(), text.toString().getBytes(StandardCharsets.UTF_8));
+
+        return "Decompressed successfully!\n\nSaved as: " + output.getName()
+                + "\nCharacters restored: " + text.length() + "\n";
     }
 
-    static String describe(int b) {
-        if (b == ' ') return "' '";
-        if (b == '\n') return "\\n";
-        if (b == '\r') return "\\r";
-        if (b == '\t') return "\\t";
-        if (b > 32 && b < 127) return String.valueOf((char) b);
-        return String.format("0x%02X", b);
+    // make special characters readable in the text box
+    static String show(char c) {
+        if (c == ' ') return "[space]";
+        if (c == '\n') return "[newline]";
+        if (c == '\t') return "[tab]";
+        if (c == '\r') return "[return]";
+        return "'" + c + "'";
     }
 
-    // ---------------------------------------------------------------
-    //  GUI
-    // ---------------------------------------------------------------
-    private final JTextField pathField = new JTextField();
-    private final JTextArea log = new JTextArea();
-    private File selected;
+    // ---------- Window (GUI) ----------
+    JTextField fileBox = new JTextField();
+    JTextArea outputBox = new JTextArea();
+    File chosenFile = null;
 
     public huffman() {
-        super("Huffman File Compressor");
+        setTitle("Huffman Compressor");
+        setSize(600, 450);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
-        setSize(700, 520);
         setLocationRelativeTo(null);
-        setLayout(new BorderLayout(10, 10));
 
-        // Top: file chooser row
-        JPanel top = new JPanel(new BorderLayout(8, 8));
-        top.setBorder(BorderFactory.createEmptyBorder(10, 10, 0, 10));
-        pathField.setEditable(false);
-        JButton browse = new JButton("Browse...");
-        top.add(new JLabel("File:"), BorderLayout.WEST);
-        top.add(pathField, BorderLayout.CENTER);
-        top.add(browse, BorderLayout.EAST);
+        // top row: file name + browse button
+        fileBox.setEditable(false);
+        JButton browseButton = new JButton("Browse");
+        JPanel topPanel = new JPanel(new BorderLayout(5, 5));
+        topPanel.add(new JLabel(" File: "), BorderLayout.WEST);
+        topPanel.add(fileBox, BorderLayout.CENTER);
+        topPanel.add(browseButton, BorderLayout.EAST);
 
-        // Centre: output area
-        log.setEditable(false);
-        log.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
-        log.setText("Choose a file, then click Compress or Decompress.\n");
-        JScrollPane scroll = new JScrollPane(log);
-        scroll.setBorder(BorderFactory.createEmptyBorder(0, 10, 0, 10));
+        // middle: where the results are shown
+        outputBox.setEditable(false);
+        outputBox.setFont(new Font("Monospaced", Font.PLAIN, 13));
+        outputBox.setText("1. Click Browse and pick a text file\n2. Click Compress or Decompress\n");
 
-        // Bottom: action buttons
-        JButton compressBtn = new JButton("Compress");
-        JButton decompressBtn = new JButton("Decompress");
-        JButton clearBtn = new JButton("Clear");
-        JPanel bottom = new JPanel(new FlowLayout(FlowLayout.CENTER, 15, 10));
-        bottom.add(compressBtn);
-        bottom.add(decompressBtn);
-        bottom.add(clearBtn);
+        // bottom row: buttons
+        JButton compressButton = new JButton("Compress");
+        JButton decompressButton = new JButton("Decompress");
+        JPanel bottomPanel = new JPanel();
+        bottomPanel.add(compressButton);
+        bottomPanel.add(decompressButton);
 
-        add(top, BorderLayout.NORTH);
-        add(scroll, BorderLayout.CENTER);
-        add(bottom, BorderLayout.SOUTH);
+        add(topPanel, BorderLayout.NORTH);
+        add(new JScrollPane(outputBox), BorderLayout.CENTER);
+        add(bottomPanel, BorderLayout.SOUTH);
 
-        browse.addActionListener(e -> chooseFile());
-        compressBtn.addActionListener(e -> run(true));
-        decompressBtn.addActionListener(e -> run(false));
-        clearBtn.addActionListener(e -> log.setText(""));
-    }
-
-    private void chooseFile() {
-        JFileChooser chooser = new JFileChooser();
-        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            selected = chooser.getSelectedFile();
-            pathField.setText(selected.getAbsolutePath());
-        }
-    }
-
-    private void run(boolean doCompress) {
-        if (selected == null || !selected.isFile()) {
-            JOptionPane.showMessageDialog(this, "Please choose a file first.",
-                    "No file", JOptionPane.WARNING_MESSAGE);
-            return;
-        }
-        try {
-            String report;
-            if (doCompress) {
-                File out = new File(selected.getParentFile(), selected.getName() + ".huff");
-                report = compress(selected, out);
-            } else {
-                File out = restoredName(selected);
-                report = decompress(selected, out);
+        // what each button does
+        browseButton.addActionListener(e -> {
+            JFileChooser chooser = new JFileChooser();
+            if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+                chosenFile = chooser.getSelectedFile();
+                fileBox.setText(chosenFile.getAbsolutePath());
             }
-            log.setText(report);
-            log.setCaretPosition(0);
-        } catch (Exception ex) {
-            JOptionPane.showMessageDialog(this,
-                    "Something went wrong: " + ex.getMessage()
-                            + "\n(Is this a valid .huff file?)",
-                    "Error", JOptionPane.ERROR_MESSAGE);
-        }
-    }
+        });
 
-    /** notes.txt.huff -> notes_restored.txt */
-    private static File restoredName(File f) {
-        String name = f.getName();
-        if (name.endsWith(".huff")) name = name.substring(0, name.length() - 5);
-        int dot = name.lastIndexOf('.');
-        String restored = (dot > 0)
-                ? name.substring(0, dot) + "_restored" + name.substring(dot)
-                : name + "_restored";
-        return new File(f.getParentFile(), restored);
+        compressButton.addActionListener(e -> {
+            if (chosenFile == null) {
+                JOptionPane.showMessageDialog(this, "Please choose a file first.");
+                return;
+            }
+            try {
+                // ask the user where to save (download) the compressed file
+                File output = askWhereToSave(chosenFile.getName() + ".huff");
+                if (output == null) {
+                    return;   // user pressed Cancel
+                }
+                outputBox.setText(compress(chosenFile, output));
+                outputBox.setCaretPosition(0);
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(this, "Error: " + ex.getMessage());
+            }
+        });
+
+        decompressButton.addActionListener(e -> {
+            if (chosenFile == null) {
+                JOptionPane.showMessageDialog(this, "Please choose a file first.");
+                return;
+            }
+            try {
+                String name = chosenFile.getName();
+                if (name.endsWith(".huff")) {
+                    name = name.substring(0, name.length() - 5);
+                }
+                File output = askWhereToSave("decoded_" + name);
+                if (output == null) {
+                    return;   // user pressed Cancel
+                }
+                outputBox.setText(decompress(chosenFile, output));
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(this, "Error: " + ex.getMessage()
+                        + "\nMake sure you picked a .huff file.");
+            }
+        });
     }
 
     public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> new huffman().setVisible(true));
+        huffman window = new huffman();
+        window.setVisible(true);
     }
 }
