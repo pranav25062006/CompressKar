@@ -1,8 +1,8 @@
-import javax.swing.*;
 import java.awt.*;
 import java.io.*;
 import java.nio.file.Files;
 import java.util.PriorityQueue;
+import javax.swing.*;
 
 /**
  * Huffman File Compressor with a Swing GUI.
@@ -11,7 +11,7 @@ import java.util.PriorityQueue;
  * Compile: javac HuffmanCompressor.java
  * Run:     java HuffmanCompressor
  */
-public class HuffmanCompressor extends JFrame {
+public class huffman extends JFrame {
 
     // ---------------------------------------------------------------
     //  Huffman core
@@ -195,7 +195,7 @@ public class HuffmanCompressor extends JFrame {
     private final JTextArea log = new JTextArea();
     private File selected;
 
-    public HuffmanCompressor() {
+    public huffman() {
         super("Huffman File Compressor");
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setSize(700, 520);
@@ -282,6 +282,6 @@ public class HuffmanCompressor extends JFrame {
     }
 
     public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> new HuffmanCompressor().setVisible(true));
+        SwingUtilities.invokeLater(() -> new huffman().setVisible(true));
     }
 }
